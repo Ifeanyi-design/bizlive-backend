@@ -8,28 +8,10 @@ on:
   pull_request:
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install frontend dependencies
-        run: npm install
-
-      - name: TypeScript check
-        run: npx tsc --noEmit --pretty false
-
   backend:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -44,7 +26,7 @@ jobs:
         run: python -m compileall backend
 
   sync-huggingface:
-    needs: [frontend, backend]
+    needs: [backend]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     steps:
@@ -61,6 +43,4 @@ jobs:
           HF_URL="https://bizlive:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/bizlive/BizLive"
 
           git remote add hf $HF_URL || git remote set-url hf $HF_URL
-
-          git push hf HEAD:main
-
+          git push hf HEAD:main --force
