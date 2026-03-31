@@ -1,7 +1,7 @@
 from flask import Flask
 
 from .config import Config
-from .extensions import cors, db, socketio
+from .extensions import cors, db, migrate, socketio
 from .routes.auth import auth_bp
 from .routes.live import live_bp
 from .routes.platform import platform_bp
@@ -13,6 +13,7 @@ def create_app() -> Flask:
     app.config.from_object(Config)
 
     db.init_app(app)
+    migrate.init_app(app, db)
     cors.init_app(app, resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}})
     socketio.init_app(
         app,

@@ -207,21 +207,46 @@ def withdraw_wallet(user_id: str):
 
 @platform_bp.get("/threads")
 def list_threads():
-    rows = Conversation.query.order_by(Conversation.created_at.desc()).limit(100).all()
+    rows = Conversation.query.order_by(Conversation.updated_at.desc()).limit(100).all()
+    requested_kind = request.args.get("kind")
+    items = []
+    for row in rows:
+        metadata = row.metadata_json or {}
+        kind = metadata.get("kind", "chat")
+        if requested_kind and kind != requested_kind:
+            continue
+        last_message = (
+            MessageRecord.query.filter_by(conversation_id=row.id)
+            .order_by(MessageRecord.created_at.desc())
+            .first()
+        )
+        items.append(
+            {
+                "id": row.id,
+                "title": metadata.get("title") or row.title,
+                "titleBuyer": metadata.get("titleBuyer"),
+                "titleSeller": metadata.get("titleSeller"),
+                "buyerId": metadata.get("buyerId"),
+                "sellerId": metadata.get("sellerId"),
+                "orderId": metadata.get("orderId"),
+                "kind": kind,
+                "last": last_message.body if last_message else metadata.get("last", ""),
+                "lastTs": int(
+                    (last_message.created_at if last_message else row.updated_at).timestamp() * 1000
+                ),
+                "unread": int(metadata.get("unread", 0) or 0),
+                "muted": bool(metadata.get("muted", False)),
+                "pinned": bool(metadata.get("pinned", False)),
+                "verified": bool(metadata.get("verified", False)),
+                "online": bool(metadata.get("online", False)),
+                "lastSeenTs": metadata.get("lastSeenTs"),
+                "activeOrderId": metadata.get("activeOrderId"),
+                "tag": metadata.get("tag"),
+                "live": metadata.get("live"),
+            }
+        )
     return _ok(
-        {
-            "items": [
-                {
-                    "id": row.id,
-                    "title": row.title,
-                    "kind": request.args.get("kind", "chat"),
-                    "last": "",
-                    "lastTs": int(row.created_at.timestamp() * 1000),
-                    "unread": 0,
-                }
-                for row in rows
-            ]
-        }
+        {"items": items}
     )
 
 
@@ -565,6 +590,27 @@ def get_messages(conversation_id: str):
         .limit(200)
         .all()
     )
+
+
+@platform_bp.put("/threads/<conversation_id>")
+def upsert_thread(conversation_id: str):
+    payload = request.get_json(silent=True) or {}
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        conversation = Conversation(
+            id=conversation_id,
+            title=str(payload.get("title") or "Conversation"),
+            metadata_json=payload,
+        )
+        db.session.add(conversation)
+    else:
+        conversation.title = str(payload.get("title") or conversation.title or "Conversation")
+        conversation.metadata_json = {
+            **(conversation.metadata_json or {}),
+            **payload,
+        }
+    db.session.commit()
+    return _ok({"threadId": conversation.id, "updated": True})
     return _ok(
         {
             "items": [
@@ -591,8 +637,17 @@ def post_message(conversation_id: str):
         conversation = Conversation(
             id=conversation_id,
             title=str(payload.get("title") or "Conversation"),
+            metadata_json=payload.get("thread") or {},
         )
         db.session.add(conversation)
+    elif payload.get("thread"):
+        conversation.metadata_json = {
+            **(conversation.metadata_json or {}),
+            **(payload.get("thread") or {}),
+        }
+        conversation.title = str(
+            (payload.get("thread") or {}).get("title") or conversation.title or "Conversation"
+        )
 
     message = MessageRecord(
         id=str(payload.get("id")),

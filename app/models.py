@@ -142,7 +142,14 @@ class Conversation(db.Model):
 
     id = db.Column(db.String(64), primary_key=True)
     title = db.Column(db.String(255), nullable=False, default="Conversation")
+    metadata_json = db.Column(db.JSON, nullable=False, default=dict)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
 
 
 class MessageRecord(db.Model):
