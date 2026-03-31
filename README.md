@@ -1,5 +1,15 @@
 # BizLive Backend
 
+---
+title: BizLive Backend
+emoji: 🐍
+colorFrom: "#FF0000"
+colorTo: "#00FF00"
+sdk: docker
+app_file: Dockerfile
+pinned: false
+---
+
 Separate Flask backend for BizLive app and live-room testing.
 
 ## Stack
