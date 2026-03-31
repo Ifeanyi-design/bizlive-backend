@@ -1,5 +1,3 @@
-# BizLive Backend
-
 ---
 title: BizLive Backend
 emoji: 🐍
@@ -10,6 +8,8 @@ python_version: "3.11"
 app_file: Dockerfile
 pinned: false
 ---
+
+# BizLive Backend
 
 Separate Flask backend for BizLive app and live-room testing.
 
