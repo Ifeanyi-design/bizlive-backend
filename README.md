@@ -1,3 +1,29 @@
+---
+title: BizLive Backend
+emoji: 🚀
+colorFrom: blue
+colorTo: green
+sdk: python
+sdk_version: "3.11"
+python_version: "3.11"
+app_file: app.py
+pinned: false
+---
+
+# BizLive Backend
+
+This is the Python backend for **BizLive**.  
+It exposes API endpoints for the frontend app (React Native/Expo).  
+
+## Running Locally
+
+1. Create a virtual environment (optional but recommended):
+
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+venv\Scripts\activate     # Windows
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
