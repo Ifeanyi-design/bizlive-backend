@@ -6,6 +6,7 @@ emoji: 🐍
 colorFrom: "#FF0000"
 colorTo: "#00FF00"
 sdk: docker
+sdk_version: "20.10.24"
 app_file: Dockerfile
 pinned: false
 ---
