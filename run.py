@@ -1,10 +1,12 @@
 from app import create_app
 from app.extensions import db, socketio
+import os
 
 app = create_app()
 
-with app.app_context():
-    db.create_all()
+if os.getenv("AUTO_CREATE_TABLES", "1") == "1":
+    with app.app_context():
+        db.create_all()
 
 @app.route("/")
 def indexes():
