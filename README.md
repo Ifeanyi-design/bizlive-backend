@@ -3,8 +3,10 @@ title: BizLive Backend
 emoji: 🚀
 colorFrom: blue
 colorTo: green
-sdk: python
-sdk_version: "3.11"
+sdk: docker
+# Note: For Docker SDK, sdk_version is typically not required. 
+# If you want to specify one, ensure it is a valid version string like "4.40.0"
+# sdk_version: "4.40.0" 
 python_version: "3.11"
 app_file: app.py
 pinned: false
