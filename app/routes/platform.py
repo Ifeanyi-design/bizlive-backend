@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from decimal import Decimal
 
 from flask import Blueprint, request
@@ -7,11 +8,14 @@ from flask import Blueprint, request
 from ..extensions import db
 from ..models import (
     Conversation,
+    ListingRecord,
     MessageRecord,
     OrderRecord,
     RiskFlag,
+    ServiceRequestRecord,
     TransactionRecord,
     User,
+    VerificationCase,
     Wallet,
     WalletLedgerEntry,
 )
@@ -611,6 +615,39 @@ def upsert_thread(conversation_id: str):
         }
     db.session.commit()
     return _ok({"threadId": conversation.id, "updated": True})
+
+
+@platform_bp.post("/threads/<conversation_id>/presence")
+def update_thread_presence(conversation_id: str):
+    payload = request.get_json(silent=True) or {}
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return _err("Thread not found", 404)
+    conversation.metadata_json = {
+        **(conversation.metadata_json or {}),
+        "online": bool(payload.get("online", False)),
+        "lastSeenTs": payload.get("lastSeenTs"),
+    }
+    db.session.commit()
+    return _ok({"threadId": conversation.id, "updated": True})
+
+
+@platform_bp.post("/threads/<conversation_id>/moderation")
+def moderate_thread(conversation_id: str):
+    payload = request.get_json(silent=True) or {}
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return _err("Thread not found", 404)
+    moderation = {
+        **((conversation.metadata_json or {}).get("moderation") or {}),
+        **payload,
+    }
+    conversation.metadata_json = {
+        **(conversation.metadata_json or {}),
+        "moderation": moderation,
+    }
+    db.session.commit()
+    return _ok({"threadId": conversation.id, "moderation": moderation})
     return _ok(
         {
             "items": [
@@ -670,3 +707,227 @@ def get_thread_messages_alias(conversation_id: str):
 @platform_bp.post("/threads/<conversation_id>/messages")
 def post_thread_message_alias(conversation_id: str):
     return post_message(conversation_id)
+
+
+@platform_bp.post("/threads/<conversation_id>/messages/<message_id>/reactions")
+def react_to_message(conversation_id: str, message_id: str):
+    payload = request.get_json(silent=True) or {}
+    message = MessageRecord.query.filter_by(
+        id=message_id,
+        conversation_id=conversation_id,
+    ).first()
+    if not message:
+        return _err("Message not found", 404)
+
+    emoji = str(payload.get("emoji") or "").strip()
+    user = str(payload.get("user") or "").strip()
+    if not emoji or not user:
+        return _err("emoji and user are required")
+
+    metadata = message.metadata_json or {}
+    reactions = dict(metadata.get("reactions") or {})
+    existing = list(reactions.get(emoji) or [])
+    if user in existing:
+        reactions[emoji] = [item for item in existing if item != user]
+    else:
+        reactions[emoji] = [*existing, user]
+    metadata["reactions"] = reactions
+    message.metadata_json = metadata
+    db.session.commit()
+    return _ok({"messageId": message.id, "reactions": reactions})
+
+
+@platform_bp.get("/kyc/cases")
+def list_verification_cases():
+    user_id = request.args.get("userId")
+    query = VerificationCase.query.order_by(VerificationCase.updated_at.desc())
+    if user_id:
+        query = query.filter(VerificationCase.user_id == user_id)
+    rows = query.limit(100).all()
+    return _ok(
+        {
+            "items": [
+                {
+                    "id": row.id,
+                    "userId": row.user_id,
+                    "tier": row.tier,
+                    "status": row.status,
+                    "provider": row.provider,
+                    "metadata": row.metadata_json,
+                    "createdAt": row.created_at.isoformat(),
+                    "updatedAt": row.updated_at.isoformat(),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
+@platform_bp.post("/kyc/cases")
+def create_verification_case():
+    payload = request.get_json(silent=True) or {}
+    case = VerificationCase(
+        id=str(payload.get("id") or f"kyc-{secrets.token_hex(8)}"),
+        user_id=str(payload.get("userId") or ""),
+        tier=str(payload.get("tier") or "tier_1"),
+        status=str(payload.get("status") or "submitted"),
+        provider=payload.get("provider"),
+        metadata_json=payload.get("metadata") or {},
+    )
+    if not case.user_id:
+        return _err("userId is required")
+    db.session.add(case)
+    db.session.commit()
+    return _ok({"caseId": case.id})
+
+
+@platform_bp.put("/kyc/cases/<case_id>")
+def update_verification_case(case_id: str):
+    payload = request.get_json(silent=True) or {}
+    case = VerificationCase.query.get(case_id)
+    if not case:
+        return _err("Verification case not found", 404)
+    if "status" in payload:
+        case.status = str(payload["status"])
+    if "metadata" in payload:
+        case.metadata_json = payload.get("metadata") or {}
+    db.session.commit()
+    return _ok({"caseId": case.id, "updated": True})
+
+
+@platform_bp.get("/listings")
+def list_listings():
+    seller_id = request.args.get("sellerId")
+    query = ListingRecord.query.order_by(ListingRecord.updated_at.desc())
+    if seller_id:
+        query = query.filter(ListingRecord.seller_id == seller_id)
+    rows = query.limit(200).all()
+    return _ok(
+        {
+            "items": [
+                {
+                    "id": row.id,
+                    "sellerId": row.seller_id,
+                    "title": row.title,
+                    "price": float(row.price),
+                    "currency": row.currency,
+                    "kind": row.kind,
+                    "status": row.status,
+                    "metadata": row.metadata_json,
+                    "createdAt": row.created_at.isoformat(),
+                    "updatedAt": row.updated_at.isoformat(),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
+@platform_bp.get("/listings/<listing_id>")
+def get_listing(listing_id: str):
+    row = ListingRecord.query.get(listing_id)
+    if not row:
+        return _err("Listing not found", 404)
+    return _ok(
+        {
+            "id": row.id,
+            "sellerId": row.seller_id,
+            "title": row.title,
+            "price": float(row.price),
+            "currency": row.currency,
+            "kind": row.kind,
+            "status": row.status,
+            "metadata": row.metadata_json,
+            "createdAt": row.created_at.isoformat(),
+            "updatedAt": row.updated_at.isoformat(),
+        }
+    )
+
+
+@platform_bp.post("/listings")
+def create_listing():
+    payload = request.get_json(silent=True) or {}
+    listing = ListingRecord(
+        id=str(payload.get("id") or f"listing-{secrets.token_hex(8)}"),
+        seller_id=str(payload.get("sellerId") or ""),
+        title=str(payload.get("title") or "Listing"),
+        price=Decimal(str(payload.get("price") or 0)),
+        currency=str(payload.get("currency") or "NGN"),
+        kind=str(payload.get("kind") or "product"),
+        status=str(payload.get("status") or "draft"),
+        metadata_json=payload.get("metadata") or {},
+    )
+    if not listing.seller_id:
+        return _err("sellerId is required")
+    db.session.add(listing)
+    db.session.commit()
+    return _ok({"listingId": listing.id})
+
+
+@platform_bp.get("/service-requests")
+def list_service_requests():
+    user_id = request.args.get("userId")
+    query = ServiceRequestRecord.query.order_by(ServiceRequestRecord.updated_at.desc())
+    if user_id:
+        query = query.filter(
+            (ServiceRequestRecord.requester_id == user_id)
+            | (ServiceRequestRecord.provider_id == user_id)
+        )
+    rows = query.limit(200).all()
+    return _ok(
+        {
+            "items": [
+                {
+                    "id": row.id,
+                    "requesterId": row.requester_id,
+                    "providerId": row.provider_id,
+                    "requestType": row.request_type,
+                    "status": row.status,
+                    "title": row.title,
+                    "amount": float(row.amount),
+                    "currency": row.currency,
+                    "metadata": row.metadata_json,
+                    "createdAt": row.created_at.isoformat(),
+                    "updatedAt": row.updated_at.isoformat(),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
+@platform_bp.post("/service-requests")
+def create_service_request():
+    payload = request.get_json(silent=True) or {}
+    record = ServiceRequestRecord(
+        id=str(payload.get("id") or f"svc-{secrets.token_hex(8)}"),
+        requester_id=str(payload.get("requesterId") or ""),
+        provider_id=payload.get("providerId"),
+        request_type=str(payload.get("requestType") or "delivery"),
+        status=str(payload.get("status") or "created"),
+        title=str(payload.get("title") or "Service request"),
+        amount=Decimal(str(payload.get("amount") or 0)),
+        currency=str(payload.get("currency") or "NGN"),
+        metadata_json=payload.get("metadata") or {},
+    )
+    if not record.requester_id:
+        return _err("requesterId is required")
+    db.session.add(record)
+    db.session.commit()
+    return _ok({"serviceRequestId": record.id})
+
+
+@platform_bp.put("/service-requests/<request_id>")
+def update_service_request(request_id: str):
+    payload = request.get_json(silent=True) or {}
+    record = ServiceRequestRecord.query.get(request_id)
+    if not record:
+        return _err("Service request not found", 404)
+    if "status" in payload:
+        record.status = str(payload["status"])
+    if "providerId" in payload:
+        record.provider_id = payload.get("providerId")
+    if "metadata" in payload:
+        record.metadata_json = payload.get("metadata") or {}
+    db.session.commit()
+    return _ok({"serviceRequestId": record.id, "updated": True})

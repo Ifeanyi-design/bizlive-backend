@@ -244,6 +244,72 @@ def send_gift():
     return _ok({**payload, "sentAt": int(datetime.utcnow().timestamp() * 1000)})
 
 
+@live_bp.post("/streams/<live_stream_id>/presence")
+def update_live_presence(live_stream_id: str):
+    payload = request.get_json(silent=True) or {}
+    db.session.add(
+        LiveEvent(
+            live_room_id=live_stream_id,
+            event_type="presence_update",
+            actor_id=str(payload.get("userId") or ""),
+            payload_json=payload,
+        )
+    )
+    db.session.commit()
+    return _ok(
+        {
+            "liveStreamId": live_stream_id,
+            "userId": payload.get("userId"),
+            "presence": payload,
+            "updatedAt": int(datetime.utcnow().timestamp() * 1000),
+        }
+    )
+
+
+@live_bp.post("/streams/<live_stream_id>/moderation")
+def moderate_live_user(live_stream_id: str):
+    payload = request.get_json(silent=True) or {}
+    db.session.add(
+        LiveEvent(
+            live_room_id=live_stream_id,
+            event_type="moderation_action",
+            actor_id=str(payload.get("actorId") or ""),
+            payload_json=payload,
+        )
+    )
+    db.session.commit()
+    return _ok(
+        {
+            "liveStreamId": live_stream_id,
+            "targetUserId": payload.get("targetUserId"),
+            "action": payload.get("action"),
+            "updatedAt": int(datetime.utcnow().timestamp() * 1000),
+        }
+    )
+
+
+@live_bp.post("/streams/<live_stream_id>/reactions")
+def react_in_live_room(live_stream_id: str):
+    payload = request.get_json(silent=True) or {}
+    db.session.add(
+        LiveEvent(
+            live_room_id=live_stream_id,
+            event_type="reaction_sent",
+            actor_id=str(payload.get("userId") or ""),
+            payload_json=payload,
+        )
+    )
+    db.session.commit()
+    return _ok(
+        {
+            "liveStreamId": live_stream_id,
+            "userId": payload.get("userId"),
+            "emoji": payload.get("emoji"),
+            "sentAt": int(datetime.utcnow().timestamp() * 1000),
+        }
+    )
+
+
 @live_bp.post("/push")
 def push_live_notification():
     payload = request.get_json(silent=True) or {}
