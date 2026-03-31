@@ -42,3 +42,24 @@ jobs:
 
       - name: Compile backend
         run: python -m compileall backend
+
+  sync-huggingface:
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Hugging Face
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          HF_URL="https://bizlive:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/bizlive/BizLive"
+
+          git remote add hf $HF_URL || git remote set-url hf $HF_URL
+
+          git push hf HEAD:main
