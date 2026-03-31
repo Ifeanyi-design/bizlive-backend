@@ -1,8 +1,8 @@
 ---
 title: BizLive Backend
 emoji: 🐍
-colorFrom: "#FF0000"
-colorTo: "#00FF00"
+colorFrom: red
+colorTo: green
 sdk: docker
 python_version: "3.11"
 app_file: Dockerfile
