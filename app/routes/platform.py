@@ -92,6 +92,67 @@ def _log_risk_flag(
     )
 
 
+def _serialize_message(row: MessageRecord) -> dict:
+    metadata = row.metadata_json or {}
+    return {
+        "id": row.id,
+        "conversationId": row.conversation_id,
+        "senderId": row.sender_id,
+        "messageType": row.message_type,
+        "body": row.body,
+        "metadata": {
+            **metadata,
+            "status": metadata.get("status") or "delivered",
+        },
+        "createdAt": row.created_at.isoformat(),
+    }
+
+
+def _normalize_participants(metadata: dict | None) -> set[str]:
+    payload = metadata or {}
+    participants = set()
+    raw_ids = payload.get("participantIds") or []
+    if isinstance(raw_ids, list):
+        participants.update(str(item).strip() for item in raw_ids if str(item).strip())
+    for key in ("buyerId", "sellerId", "title", "titleBuyer", "titleSeller"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            participants.add(value.strip())
+    account_keys = payload.get("accountKeys") or []
+    if isinstance(account_keys, list):
+        participants.update(str(item).strip() for item in account_keys if str(item).strip())
+    return participants
+
+
+def _conversation_visible_to_user(
+    row: Conversation,
+    *,
+    user_id: str | None,
+    username: str | None,
+) -> bool:
+    if not user_id and not username:
+        return True
+    participants = _normalize_participants(row.metadata_json or {})
+    if user_id and user_id in participants:
+        return True
+    if username and username in participants:
+        return True
+
+    recent_senders = (
+        db.session.query(MessageRecord.sender_id)
+        .filter(MessageRecord.conversation_id == row.id)
+        .distinct()
+        .limit(12)
+        .all()
+    )
+    sender_ids = {sender_id for (sender_id,) in recent_senders if sender_id}
+    if user_id and user_id in sender_ids:
+        return True
+    if username and username in sender_ids:
+        return True
+    return False
+
+
 @platform_bp.post("/users/bootstrap")
 def bootstrap_user():
     payload = request.get_json(silent=True) or {}
@@ -213,8 +274,12 @@ def withdraw_wallet(user_id: str):
 def list_threads():
     rows = Conversation.query.order_by(Conversation.updated_at.desc()).limit(100).all()
     requested_kind = request.args.get("kind")
+    user_id = request.args.get("userId")
+    username = request.args.get("username")
     items = []
     for row in rows:
+        if not _conversation_visible_to_user(row, user_id=user_id, username=username):
+            continue
         metadata = row.metadata_json or {}
         kind = metadata.get("kind", "chat")
         if requested_kind and kind != requested_kind:
@@ -346,6 +411,8 @@ def pay_transaction(transaction_id: str):
         return _err("Buyer wallet not found", 404)
 
     amount = Decimal(tx.amount)
+    if tx.status == "ESCROWED" or tx.escrow_status == "held":
+        return _ok({"transactionId": tx.id, "status": tx.status, "escrowStatus": tx.escrow_status})
     if Decimal(buyer_wallet.available_balance) < amount:
         return _err("Insufficient available balance", 409)
 
@@ -400,10 +467,13 @@ def release_transaction_escrow(transaction_id: str):
         return _err("Wallet not found", 404)
 
     amount = Decimal(tx.amount)
+    if tx.status == "COMPLETED" or tx.escrow_status == "released":
+        return _ok({"transactionId": tx.id, "status": tx.status, "escrowStatus": tx.escrow_status})
     if Decimal(buyer_wallet.escrow_balance) < amount:
         return _err("Insufficient escrow balance", 409)
 
     buyer_wallet.escrow_balance = Decimal(buyer_wallet.escrow_balance) - amount
+    seller_wallet.available_balance = Decimal(seller_wallet.available_balance) + amount
     seller_wallet.earnings_balance = Decimal(seller_wallet.earnings_balance) + amount
     tx.status = "COMPLETED"
     tx.escrow_status = "released"
@@ -416,6 +486,16 @@ def release_transaction_escrow(transaction_id: str):
         amount,
         tx.currency,
         "Escrow released",
+    )
+    _add_ledger_entry(
+        tx.seller_id,
+        tx.id,
+        "seller_payout",
+        "available",
+        "credit",
+        amount,
+        tx.currency,
+        "Escrow released to seller available balance",
     )
     _add_ledger_entry(
         tx.seller_id,
@@ -445,6 +525,15 @@ def refund_transaction(transaction_id: str):
         return _err("Buyer wallet not found", 404)
 
     amount = Decimal(str(payload.get("refundAmount") or tx.amount or 0))
+    if tx.status in {"REFUNDED", "PARTIALLY_REFUNDED"} or tx.escrow_status == "refunded":
+        return _ok(
+            {
+                "transactionId": tx.id,
+                "status": tx.status,
+                "escrowStatus": tx.escrow_status,
+                "refundAmount": float(amount),
+            }
+        )
     if amount <= 0:
         return _err("refundAmount must be greater than zero")
     if Decimal(buyer_wallet.escrow_balance) < amount:
@@ -588,30 +677,40 @@ def update_order(order_id: str):
 
 @platform_bp.get("/conversations/<conversation_id>/messages")
 def get_messages(conversation_id: str):
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return _err("Thread not found", 404)
+    user_id = request.args.get("userId")
+    username = request.args.get("username")
+    if not _conversation_visible_to_user(conversation, user_id=user_id, username=username):
+        return _err("Thread not found", 404)
     rows = (
         MessageRecord.query.filter_by(conversation_id=conversation_id)
         .order_by(MessageRecord.created_at.desc())
         .limit(200)
         .all()
     )
+    return _ok({"items": [_serialize_message(row) for row in rows]})
 
 
 @platform_bp.put("/threads/<conversation_id>")
 def upsert_thread(conversation_id: str):
     payload = request.get_json(silent=True) or {}
+    metadata = payload if isinstance(payload, dict) else {}
+    metadata["participantIds"] = list(_normalize_participants(metadata))
     conversation = Conversation.query.get(conversation_id)
     if not conversation:
         conversation = Conversation(
             id=conversation_id,
             title=str(payload.get("title") or "Conversation"),
-            metadata_json=payload,
+            metadata_json=metadata,
         )
         db.session.add(conversation)
     else:
         conversation.title = str(payload.get("title") or conversation.title or "Conversation")
         conversation.metadata_json = {
             **(conversation.metadata_json or {}),
-            **payload,
+            **metadata,
         }
     db.session.commit()
     return _ok({"threadId": conversation.id, "updated": True})
@@ -648,43 +747,40 @@ def moderate_thread(conversation_id: str):
     }
     db.session.commit()
     return _ok({"threadId": conversation.id, "moderation": moderation})
-    return _ok(
-        {
-            "items": [
-                {
-                    "id": row.id,
-                    "conversationId": row.conversation_id,
-                    "senderId": row.sender_id,
-                    "messageType": row.message_type,
-                    "body": row.body,
-                    "metadata": row.metadata_json,
-                    "createdAt": row.created_at.isoformat(),
-                }
-                for row in rows
-            ]
-        }
-    )
 
 
 @platform_bp.post("/conversations/<conversation_id>/messages")
 def post_message(conversation_id: str):
     payload = request.get_json(silent=True) or {}
+    thread_payload = payload.get("thread") or {}
+    normalized_thread_metadata = (
+        {**thread_payload, "participantIds": list(_normalize_participants(thread_payload))}
+        if isinstance(thread_payload, dict)
+        else {}
+    )
     conversation = Conversation.query.get(conversation_id)
     if not conversation:
         conversation = Conversation(
             id=conversation_id,
             title=str(payload.get("title") or "Conversation"),
-            metadata_json=payload.get("thread") or {},
+            metadata_json=normalized_thread_metadata,
         )
         db.session.add(conversation)
-    elif payload.get("thread"):
+    elif normalized_thread_metadata:
         conversation.metadata_json = {
             **(conversation.metadata_json or {}),
-            **(payload.get("thread") or {}),
+            **normalized_thread_metadata,
         }
         conversation.title = str(
-            (payload.get("thread") or {}).get("title") or conversation.title or "Conversation"
+            normalized_thread_metadata.get("title") or conversation.title or "Conversation"
         )
+
+    metadata = payload.get("metadata") or {}
+    if isinstance(metadata, dict):
+        metadata = {
+            **metadata,
+            "status": "delivered",
+        }
 
     message = MessageRecord(
         id=str(payload.get("id")),
@@ -692,11 +788,36 @@ def post_message(conversation_id: str):
         sender_id=str(payload.get("senderId")),
         message_type=str(payload.get("messageType") or "text"),
         body=str(payload.get("body") or ""),
-        metadata_json=payload.get("metadata") or {},
+        metadata_json=metadata,
     )
     db.session.add(message)
+    db.session.flush()
+    conversation.updated_at = message.created_at
     db.session.commit()
     return _ok({"messageId": message.id})
+
+
+@platform_bp.post("/threads/<conversation_id>/read")
+def mark_thread_read(conversation_id: str):
+    payload = request.get_json(silent=True) or {}
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return _err("Thread not found", 404)
+
+    user_id = str(payload.get("userId") or "").strip()
+    username = str(payload.get("username") or "").strip()
+    reader_key = user_id or username
+    if not reader_key:
+        return _err("userId or username is required")
+
+    metadata = conversation.metadata_json or {}
+    read_receipts = dict(metadata.get("readReceipts") or {})
+    read_at = int(payload.get("readAt") or int(datetime.utcnow().timestamp() * 1000))
+    read_receipts[reader_key] = read_at
+    metadata["readReceipts"] = read_receipts
+    conversation.metadata_json = metadata
+    db.session.commit()
+    return _ok({"threadId": conversation_id, "readerId": reader_key, "readAt": read_at})
 
 
 @platform_bp.get("/threads/<conversation_id>/messages")
