@@ -88,6 +88,92 @@ def _latest_summary(live_stream_id: str) -> dict | None:
     return payload
 
 
+def _latest_event_payload(live_stream_id: str, event_type: str) -> dict | None:
+    event = (
+        LiveEvent.query.filter_by(live_room_id=live_stream_id, event_type=event_type)
+        .order_by(LiveEvent.created_at.desc(), LiveEvent.id.desc())
+        .first()
+    )
+    if not event or not isinstance(event.payload_json, dict):
+        return None
+    return event.payload_json
+
+
+def _build_room_metadata(live_stream_id: str) -> dict:
+    stream_patch = _latest_event_payload(live_stream_id, "stream_updated") or {}
+    started_payload = _latest_event_payload(live_stream_id, "stream_started") or {}
+    source = stream_patch or started_payload
+    badges = source.get("badges")
+    if not isinstance(badges, list):
+        badges = []
+    return {
+        "themeId": source.get("themeId") or source.get("templateId"),
+        "qualityMode": source.get("qualityMode"),
+        "effectsPipeline": source.get("effectsPipeline"),
+        "sellerTrustLabel": source.get("sellerTrustLabel"),
+        "badges": [str(item) for item in badges if item],
+    }
+
+
+def _build_moderation_summary(live_stream_id: str) -> dict:
+    events = (
+        LiveEvent.query.filter_by(live_room_id=live_stream_id, event_type="moderation_action")
+        .order_by(LiveEvent.created_at.asc(), LiveEvent.id.asc())
+        .all()
+    )
+    reports = (
+        LiveEvent.query.filter_by(live_room_id=live_stream_id, event_type="report_submitted")
+        .order_by(LiveEvent.created_at.asc(), LiveEvent.id.asc())
+        .all()
+    )
+    blocked_users: set[str] = set()
+    muted_users: set[str] = set()
+    last_action_at: int | None = None
+    for event in events:
+        payload = event.payload_json or {}
+        target_user_id = str(payload.get("targetUserId") or "").strip()
+        action = str(payload.get("action") or "").strip()
+        if action == "block" and target_user_id:
+            blocked_users.add(target_user_id)
+        if action == "unblock" and target_user_id:
+            blocked_users.discard(target_user_id)
+        if action == "mute" and target_user_id:
+            muted_users.add(target_user_id)
+        if action == "unmute" and target_user_id:
+            muted_users.discard(target_user_id)
+        last_action_at = int(event.created_at.timestamp() * 1000)
+    return {
+        "totalActions": len(events),
+        "blockedUsers": len(blocked_users),
+        "mutedUsers": len(muted_users),
+        "reportsCount": len(reports),
+        "lastActionAt": last_action_at,
+    }
+
+
+def _build_replay_summary(live_stream_id: str) -> dict:
+    summary = _latest_summary(live_stream_id) or {}
+    replay_payload = _latest_event_payload(live_stream_id, "replay_generated") or {}
+    recording_url = replay_payload.get("recordingUrl") or summary.get("recordingUrl")
+    clips = summary.get("topMoments")
+    checkpoints = summary.get("salesTimeline")
+    return {
+        "available": bool(summary or replay_payload),
+        "recordingUrl": recording_url,
+        "clipsCount": len(clips) if isinstance(clips, list) else 0,
+        "checkpointsCount": len(checkpoints) if isinstance(checkpoints, list) else 0,
+        "generatedAt": replay_payload.get("generatedAt"),
+    }
+
+
+def _serialize_room_state(live_stream_id: str) -> dict:
+    return {
+        "metadata": _build_room_metadata(live_stream_id),
+        "moderation": _build_moderation_summary(live_stream_id),
+        "replay": _build_replay_summary(live_stream_id),
+    }
+
+
 def _serialize_room(room: LiveRoom) -> dict:
     joined_participants = RoomParticipant.query.filter_by(
         live_room_id=room.id,
@@ -112,6 +198,7 @@ def _serialize_room(room: LiveRoom) -> dict:
         ],
         "pins": _serialize_pins(room.id),
         "summary": _latest_summary(room.id),
+        "roomState": _serialize_room_state(room.id),
         "updatedAt": int(room.updated_at.timestamp() * 1000) if room.updated_at else None,
         "createdAt": int(room.created_at.timestamp() * 1000) if room.created_at else None,
     }
@@ -264,6 +351,12 @@ def get_live_pins(live_stream_id: str):
 def get_live_summary(live_stream_id: str):
     _get_or_create_room(live_stream_id)
     return _ok({"liveStreamId": live_stream_id, "summary": _latest_summary(live_stream_id)})
+
+
+@live_bp.get("/streams/<live_stream_id>/state")
+def get_live_room_state(live_stream_id: str):
+    _get_or_create_room(live_stream_id)
+    return _ok({"liveStreamId": live_stream_id, **_serialize_room_state(live_stream_id)})
 
 
 @live_bp.post("/streams/<live_stream_id>/summary")
@@ -631,7 +724,30 @@ def moderate_live_user(live_stream_id: str):
             "liveStreamId": live_stream_id,
             "targetUserId": payload.get("targetUserId"),
             "action": payload.get("action"),
+            "moderation": _build_moderation_summary(live_stream_id),
             "updatedAt": int(datetime.utcnow().timestamp() * 1000),
+        }
+    )
+
+
+@live_bp.post("/streams/<live_stream_id>/report")
+def report_live_room(live_stream_id: str):
+    payload = request.get_json(silent=True) or {}
+    db.session.add(
+        LiveEvent(
+            live_room_id=live_stream_id,
+            event_type="report_submitted",
+            actor_id=str(payload.get("actorId") or payload.get("userId") or ""),
+            payload_json=payload,
+        )
+    )
+    db.session.commit()
+    return _ok(
+        {
+            "liveStreamId": live_stream_id,
+            "reportId": f"report-{live_stream_id}-{int(datetime.utcnow().timestamp() * 1000)}",
+            "moderation": _build_moderation_summary(live_stream_id),
+            "reportedAt": int(datetime.utcnow().timestamp() * 1000),
         }
     )
 
