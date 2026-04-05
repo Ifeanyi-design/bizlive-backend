@@ -145,6 +145,23 @@ def create_live_stream():
     return _ok({"liveStreamId": room.id, "status": room.status})
 
 
+@live_bp.get("/runtime-status")
+def live_runtime_status():
+    livekit_configured = True
+    try:
+        require_livekit_config()
+    except Exception:
+        livekit_configured = False
+    return _ok(
+        {
+            "livekitConfigured": livekit_configured,
+            "livekitUrlConfigured": bool(current_app.config.get("LIVEKIT_URL", "")),
+            "apiKeyConfigured": bool(current_app.config.get("LIVEKIT_API_KEY", "")),
+            "apiSecretConfigured": bool(current_app.config.get("LIVEKIT_API_SECRET", "")),
+        }
+    )
+
+
 @live_bp.get("/streams/<live_stream_id>")
 def get_live_stream(live_stream_id: str):
     room = _get_or_create_room(live_stream_id)
@@ -507,16 +524,72 @@ def respond_to_invite():
 @live_bp.post("/gifts")
 def send_gift():
     payload = request.get_json(silent=True) or {}
+    live_stream_id = str(payload.get("liveStreamId") or "").strip()
+    sender_id = str(payload.get("senderId") or "").strip()
+    client_request_id = str(payload.get("clientRequestId") or "").strip()
+    if not live_stream_id:
+        return _error("liveStreamId is required")
+    if not sender_id:
+        return _error("senderId is required")
+    if client_request_id:
+        existing_events = (
+            LiveEvent.query.filter_by(
+                live_room_id=live_stream_id,
+                event_type="gift_sent",
+                actor_id=sender_id,
+            )
+            .order_by(LiveEvent.id.desc())
+            .limit(50)
+            .all()
+        )
+        existing = next(
+            (
+                event
+                for event in existing_events
+                if isinstance(event.payload_json, dict)
+                and str(event.payload_json.get("clientRequestId") or "").strip() == client_request_id
+            ),
+            None,
+        )
+        if existing:
+            existing_payload = existing.payload_json or {}
+            return _ok(
+                {
+                    **existing_payload,
+                    "clientRequestId": client_request_id,
+                    "ackId": f"gift-event-{existing.id}",
+                    "deduped": True,
+                    "sentAt": int(existing.created_at.timestamp() * 1000),
+                }
+            )
+
     db.session.add(
         LiveEvent(
-            live_room_id=str(payload.get("liveStreamId") or ""),
+            live_room_id=live_stream_id,
             event_type="gift_sent",
-            actor_id=str(payload.get("senderId") or ""),
+            actor_id=sender_id,
             payload_json=payload,
         )
     )
     db.session.commit()
-    return _ok({**payload, "sentAt": int(datetime.utcnow().timestamp() * 1000)})
+    latest_event = (
+        LiveEvent.query.filter_by(
+            live_room_id=live_stream_id,
+            event_type="gift_sent",
+            actor_id=sender_id,
+        )
+        .order_by(LiveEvent.id.desc())
+        .first()
+    )
+    return _ok(
+        {
+            **payload,
+            "clientRequestId": client_request_id or None,
+            "ackId": f"gift-event-{latest_event.id}" if latest_event else None,
+            "deduped": False,
+            "sentAt": int(datetime.utcnow().timestamp() * 1000),
+        }
+    )
 
 
 @live_bp.post("/streams/<live_stream_id>/presence")
