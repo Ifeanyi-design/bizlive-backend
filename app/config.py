@@ -22,6 +22,9 @@ class Config:
     }
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
     SOCKETIO_ASYNC_MODE = os.getenv("SOCKETIO_ASYNC_MODE", "gevent")
+    SOCKETIO_PATH = os.getenv("SOCKETIO_PATH", "socket.io")
+    SOCKETIO_PING_INTERVAL = int(os.getenv("SOCKETIO_PING_INTERVAL", "25"))
+    SOCKETIO_PING_TIMEOUT = int(os.getenv("SOCKETIO_PING_TIMEOUT", "60"))
     LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
     LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
     LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
