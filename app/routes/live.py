@@ -354,6 +354,7 @@ def start_live_stream(live_stream_id: str):
         )
         server_url = current_app.config["LIVEKIT_URL"]
     except Exception as error:
+        current_app.logger.exception("Failed to start live stream %s", live_stream_id)
         return _error(str(error), 500)
 
     return _ok(
@@ -559,6 +560,7 @@ def join_live_stream(live_stream_id: str):
         )
         server_url = current_app.config["LIVEKIT_URL"]
     except Exception as error:
+        current_app.logger.exception("Failed to join live stream %s for user %s", live_stream_id, user_id)
         return _error(str(error), 500)
 
     return _ok(
