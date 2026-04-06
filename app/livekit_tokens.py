@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from typing import Iterable
 
 from flask import current_app
@@ -21,7 +22,9 @@ def build_livekit_token(
     )
     token.identity = identity
     token.name = name
-    token.ttl = current_app.config["LIVEKIT_TOKEN_TTL_SECONDS"]
+    token.ttl = datetime.timedelta(
+        seconds=int(current_app.config["LIVEKIT_TOKEN_TTL_SECONDS"])
+    )
     token.with_grants(
         api.VideoGrants(
             room_join=True,
