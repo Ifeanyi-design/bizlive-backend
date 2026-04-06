@@ -209,6 +209,15 @@ def _serialize_room(room: LiveRoom) -> dict:
     }
 
 
+def _find_active_room_for_host(host_id: str) -> LiveRoom | None:
+    return (
+        LiveRoom.query.filter_by(host_id=host_id)
+        .filter(LiveRoom.status.in_(["setup", "preview", "live", "scheduled"]))
+        .order_by(LiveRoom.updated_at.desc(), LiveRoom.created_at.desc(), LiveRoom.id.desc())
+        .first()
+    )
+
+
 def _get_or_create_room(live_stream_id: str, payload: dict | None = None) -> LiveRoom:
     room = LiveRoom.query.get(live_stream_id)
     if room:
@@ -258,6 +267,17 @@ def live_runtime_status():
 def get_live_stream(live_stream_id: str):
     room = _get_or_create_room(live_stream_id)
     return _ok(_serialize_room(room))
+
+
+@live_bp.get("/hosts/<host_id>/active")
+def get_active_live_for_host(host_id: str):
+    normalized_host_id = str(host_id or "").strip()
+    if not normalized_host_id:
+        return _error("hostId is required")
+    room = _find_active_room_for_host(normalized_host_id)
+    if not room:
+        return _ok({"active": None})
+    return _ok({"active": _serialize_room(room)})
 
 
 @live_bp.patch("/streams/<live_stream_id>")
