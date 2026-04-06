@@ -212,7 +212,7 @@ def _serialize_room(room: LiveRoom) -> dict:
 def _find_active_room_for_host(host_id: str) -> LiveRoom | None:
     return (
         LiveRoom.query.filter_by(host_id=host_id)
-        .filter(LiveRoom.status.in_(["setup", "preview", "live", "scheduled"]))
+        .filter(LiveRoom.status.in_(["preview", "live"]))
         .order_by(LiveRoom.updated_at.desc(), LiveRoom.created_at.desc(), LiveRoom.id.desc())
         .first()
     )
