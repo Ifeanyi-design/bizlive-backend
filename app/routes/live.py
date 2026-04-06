@@ -154,15 +154,20 @@ def _build_moderation_summary(live_stream_id: str) -> dict:
 def _build_replay_summary(live_stream_id: str) -> dict:
     summary = _latest_summary(live_stream_id) or {}
     replay_payload = _latest_event_payload(live_stream_id, "replay_generated") or {}
-    recording_url = replay_payload.get("recordingUrl") or summary.get("recordingUrl")
-    clips = summary.get("topMoments")
-    checkpoints = summary.get("salesTimeline")
+    recording_payload = _latest_event_payload(live_stream_id, "recording_ready") or {}
+    recording_url = (
+        replay_payload.get("recordingUrl")
+        or recording_payload.get("recordingUrl")
+        or summary.get("recordingUrl")
+    )
+    clips = replay_payload.get("clips") or summary.get("topMoments")
+    checkpoints = replay_payload.get("checkpoints") or summary.get("salesTimeline")
     return {
-        "available": bool(summary or replay_payload),
+        "available": bool(summary or replay_payload or recording_payload),
         "recordingUrl": recording_url,
         "clipsCount": len(clips) if isinstance(clips, list) else 0,
         "checkpointsCount": len(checkpoints) if isinstance(checkpoints, list) else 0,
-        "generatedAt": replay_payload.get("generatedAt"),
+        "generatedAt": replay_payload.get("generatedAt") or recording_payload.get("generatedAt"),
     }
 
 
@@ -373,6 +378,37 @@ def save_live_summary(live_stream_id: str):
     )
     db.session.commit()
     return _ok({"liveStreamId": live_stream_id, "summary": payload})
+
+
+@live_bp.post("/streams/<live_stream_id>/replay")
+def save_live_replay(live_stream_id: str):
+    payload = request.get_json(silent=True) or {}
+    _get_or_create_room(live_stream_id)
+    event_type = str(payload.get("eventType") or "replay_generated")
+    if event_type not in {"replay_generated", "recording_ready"}:
+        return _error("eventType must be replay_generated or recording_ready")
+    replay_payload = {
+        "recordingUrl": payload.get("recordingUrl"),
+        "clips": payload.get("clips"),
+        "checkpoints": payload.get("checkpoints"),
+        "generatedAt": int(payload.get("generatedAt") or int(datetime.utcnow().timestamp() * 1000)),
+        "status": payload.get("status") or ("ready" if payload.get("recordingUrl") else "pending"),
+    }
+    db.session.add(
+        LiveEvent(
+            live_room_id=live_stream_id,
+            event_type=event_type,
+            actor_id=str(payload.get("actorId") or payload.get("hostId") or payload.get("host") or ""),
+            payload_json=replay_payload,
+        )
+    )
+    db.session.commit()
+    return _ok(
+        {
+            "liveStreamId": live_stream_id,
+            "replay": _build_replay_summary(live_stream_id),
+        }
+    )
 
 
 @live_bp.post("/streams/<live_stream_id>/pins")
