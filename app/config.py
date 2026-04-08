@@ -14,7 +14,7 @@ def _database_url() -> str:
 
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
-    DEBUG = os.getenv("FLASK_ENV", "development") == "development"
+    DEBUG = os.getenv("FLASK_DEBUG", "0") == "1" or os.getenv("FLASK_ENV", "").lower() == "development"
     SQLALCHEMY_DATABASE_URI = _database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {

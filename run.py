@@ -10,9 +10,11 @@ if os.getenv("AUTO_CREATE_TABLES", "1") == "1":
         db.create_all()
 
 if __name__ == "__main__":
+    debug = bool(app.config.get("DEBUG", False))
     socketio.run(
         app,
         host="0.0.0.0",
-        port=5000,
-        debug=app.config.get("DEBUG", False),
+        port=int(os.getenv("PORT", "5000")),
+        debug=debug,
+        use_reloader=debug,
     )
