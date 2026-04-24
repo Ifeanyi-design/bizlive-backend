@@ -11,7 +11,7 @@ if os.getenv("AUTO_CREATE_TABLES", "1") == "1":
         
 @app.route("/tester")
 def tester():
-    return Response("OK", status=200)
+    return "OK", 200
 
 if __name__ == "__main__":
     debug = bool(app.config.get("DEBUG", False))
