@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from flask import request
@@ -218,8 +219,11 @@ def register_socket_handlers(socketio: SocketIO) -> None:
                 or "Conversation"
             )
 
+        # Client-supplied temp ID used only for ACK reconciliation — never as PK
+        temp_id = str(payload.get("tempId") or payload.get("id") or "")
+
         message = MessageRecord(
-            id=str(payload.get("id") or ""),
+            id=str(uuid.uuid4()),   # always server-generated
             conversation_id=conversation_id,
             sender_id=user.id,
             message_type=str(payload.get("messageType") or payload.get("kind") or "text"),
@@ -227,6 +231,7 @@ def register_socket_handlers(socketio: SocketIO) -> None:
             metadata_json={
                 **(payload.get("metadata") or {}),
                 "status": "delivered",
+                "tempId": temp_id,
             },
         )
         db.session.add(message)
@@ -242,6 +247,7 @@ def register_socket_handlers(socketio: SocketIO) -> None:
             {
                 "threadId": conversation_id,
                 "messageId": message.id,
+                "tempId": temp_id,           # client reconciles temp → real ID
                 "status": "delivered",
                 "deliveredAt": int(message.created_at.timestamp() * 1000),
             },
@@ -252,6 +258,7 @@ def register_socket_handlers(socketio: SocketIO) -> None:
             {
                 "threadId": conversation_id,
                 "messageId": message.id,
+                "tempId": temp_id,
                 "status": "delivered",
                 "deliveredAt": int(message.created_at.timestamp() * 1000),
             },
@@ -306,3 +313,41 @@ def register_socket_handlers(socketio: SocketIO) -> None:
                 continue
             emit("thread_read", outbound, to=room)
             emitted_rooms.add(room)
+
+    @socketio.on("join_thread")
+    def on_join_thread(payload):
+        """Client joins a thread room to receive scoped typing indicators."""
+        thread_id = str((payload or {}).get("threadId") or "").strip()
+        if not thread_id:
+            return
+        join_room(f"thread:{thread_id}")
+
+    @socketio.on("leave_thread")
+    def on_leave_thread(payload):
+        """Client leaves a thread room on screen unmount."""
+        thread_id = str((payload or {}).get("threadId") or "").strip()
+        if not thread_id:
+            return
+        leave_room(f"thread:{thread_id}")
+
+    @socketio.on("typing")
+    def on_typing(payload):
+        """Broadcast typing state to thread participants (excluding sender)."""
+        session, user = _socket_identity(payload)
+        if not session or not user:
+            return
+        thread_id = str((payload or {}).get("threadId") or "").strip()
+        if not thread_id:
+            return
+        is_typing = bool((payload or {}).get("isTyping", False))
+        emit(
+            "typing",
+            {
+                "threadId": thread_id,
+                "userId": user.id,
+                "username": user.username,
+                "isTyping": is_typing,
+            },
+            to=f"thread:{thread_id}",
+            include_self=False,
+        )

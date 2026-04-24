@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import secrets
+import os
+import uuid
 from decimal import Decimal
 
-from flask import Blueprint, request
+from flask import Blueprint, request, send_from_directory
+from werkzeug.utils import secure_filename
 
 from ..extensions import db
 from ..models import (
@@ -1052,3 +1054,48 @@ def update_service_request(request_id: str):
         record.metadata_json = payload.get("metadata") or {}
     db.session.commit()
     return _ok({"serviceRequestId": record.id, "updated": True})
+
+
+# ── Media upload ──────────────────────────────────────────────────────────────
+
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "webm",
+                      "m4a", "aac", "caf", "mp3", "wav"}
+
+# Stored one level above the package: backend/uploads/
+_UPLOAD_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
+)
+
+
+@platform_bp.post("/media/upload")
+def upload_media():
+    """Accept a multipart/form-data upload and return a permanent URL."""
+    if "file" not in request.files:
+        return _err("No file field in request", 400)
+
+    f = request.files["file"]
+    if not f or not f.filename:
+        return _err("Empty file", 400)
+
+    ext = secure_filename(f.filename).rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return _err(f"File type '.{ext}' is not allowed", 415)
+
+    os.makedirs(_UPLOAD_DIR, exist_ok=True)
+    server_name = f"{uuid.uuid4()}.{ext}"
+    dest = os.path.join(_UPLOAD_DIR, server_name)
+    f.save(dest)
+
+    # Build absolute URL so the client can fetch it directly
+    base = request.host_url.rstrip("/")
+    url = f"{base}/uploads/{server_name}"
+    return _ok({"url": url, "filename": server_name})
+
+
+@platform_bp.get("/uploads/<path:filename>")
+def serve_upload(filename: str):
+    """Serve a previously uploaded file."""
+    safe = secure_filename(filename)
+    if not safe:
+        return _err("Invalid filename", 400)
+    return send_from_directory(_UPLOAD_DIR, safe)
